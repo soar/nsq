@@ -18,28 +18,38 @@ import (
 var (
 	showVersion = flag.Bool("version", false, "print version string")
 
-	topic         = flag.String("topic", "", "NSQ topic")
 	channel       = flag.String("channel", "", "NSQ channel")
 	maxInFlight   = flag.Int("max-in-flight", 200, "max number of messages to allow in flight")
 	totalMessages = flag.Int("n", 0, "total messages to show (will wait if starved)")
 
 	nsqdTCPAddrs     = app.StringArray{}
 	lookupdHTTPAddrs = app.StringArray{}
+	topics           = app.StringArray{}
 )
 
 func init() {
 	flag.Var(&nsqdTCPAddrs, "nsqd-tcp-address", "nsqd TCP address (may be given multiple times)")
 	flag.Var(&lookupdHTTPAddrs, "lookupd-http-address", "lookupd HTTP address (may be given multiple times)")
+	flag.Var(&topics, "topic", "NSQ topic (may be given multiple times)")
 }
 
 type TailHandler struct {
+	topicName string
 	totalMessages int
 	messagesShown int
 }
 
 func (th *TailHandler) HandleMessage(m *nsq.Message) error {
 	th.messagesShown++
-	_, err := os.Stdout.Write(m.Body)
+	_, err := os.Stdout.WriteString(th.topicName)
+	if err != nil {
+		log.Fatalf("ERROR: failed to write to os.Stdout - %s", err)
+	}
+	_, err = os.Stdout.WriteString(" | ")
+	if err != nil {
+		log.Fatalf("ERROR: failed to write to os.Stdout - %s", err)
+	}
+	_, err = os.Stdout.Write(m.Body)
 	if err != nil {
 		log.Fatalf("ERROR: failed to write to os.Stdout - %s", err)
 	}
@@ -69,15 +79,14 @@ func main() {
 		*channel = fmt.Sprintf("tail%06d#ephemeral", rand.Int()%999999)
 	}
 
-	if *topic == "" {
-		log.Fatal("--topic is required")
-	}
-
 	if len(nsqdTCPAddrs) == 0 && len(lookupdHTTPAddrs) == 0 {
 		log.Fatal("--nsqd-tcp-address or --lookupd-http-address required")
 	}
 	if len(nsqdTCPAddrs) > 0 && len(lookupdHTTPAddrs) > 0 {
 		log.Fatal("use --nsqd-tcp-address or --lookupd-http-address not both")
+	}
+	if len(topics) == 0 {
+		log.Fatal("--topic required")
 	}
 
 	sigChan := make(chan os.Signal, 1)
@@ -91,29 +100,42 @@ func main() {
 	cfg.UserAgent = fmt.Sprintf("nsq_tail/%s go-nsq/%s", version.Binary, nsq.VERSION)
 	cfg.MaxInFlight = *maxInFlight
 
-	consumer, err := nsq.NewConsumer(*topic, *channel, cfg)
-	if err != nil {
-		log.Fatal(err)
+	consumers := []nsq.Consumer{}
+	for i := 0; i < len(topics); i += 1 {
+		fmt.Printf("Adding consumer for topic: %s\n", topics[i])
+
+		consumer, err := nsq.NewConsumer(topics[i], *channel, cfg)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		consumer.AddHandler(&TailHandler{topicName: topics[i], totalMessages: *totalMessages})
+
+		err = consumer.ConnectToNSQDs(nsqdTCPAddrs)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = consumer.ConnectToNSQLookupds(lookupdHTTPAddrs)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		consumers = append(consumers, *consumer)
 	}
 
-	consumer.AddHandler(&TailHandler{totalMessages: *totalMessages})
-
-	err = consumer.ConnectToNSQDs(nsqdTCPAddrs)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = consumer.ConnectToNSQLookupds(lookupdHTTPAddrs)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for {
+	for _, consumer := range consumers {
 		select {
 		case <-consumer.StopChan:
+			for _, consumerToStop := range consumers {
+				consumerToStop.Stop()
+			}
 			return
 		case <-sigChan:
-			consumer.Stop()
+			for _, consumerToStop := range consumers {
+				consumerToStop.Stop()
+			}
+			return
 		}
 	}
 }
