@@ -21,6 +21,7 @@ var (
 	channel       = flag.String("channel", "", "NSQ channel")
 	maxInFlight   = flag.Int("max-in-flight", 200, "max number of messages to allow in flight")
 	totalMessages = flag.Int("n", 0, "total messages to show (will wait if starved)")
+	printTopic    = flag.Bool("print-topic", false, "print topic name where message was received")
 
 	nsqdTCPAddrs     = app.StringArray{}
 	lookupdHTTPAddrs = app.StringArray{}
@@ -41,15 +42,19 @@ type TailHandler struct {
 
 func (th *TailHandler) HandleMessage(m *nsq.Message) error {
 	th.messagesShown++
-	_, err := os.Stdout.WriteString(th.topicName)
-	if err != nil {
-		log.Fatalf("ERROR: failed to write to os.Stdout - %s", err)
+
+	if *printTopic {
+		_, err := os.Stdout.WriteString(th.topicName)
+		if err != nil {
+			log.Fatalf("ERROR: failed to write to os.Stdout - %s", err)
+		}
+		_, err = os.Stdout.WriteString(" | ")
+		if err != nil {
+			log.Fatalf("ERROR: failed to write to os.Stdout - %s", err)
+		}
 	}
-	_, err = os.Stdout.WriteString(" | ")
-	if err != nil {
-		log.Fatalf("ERROR: failed to write to os.Stdout - %s", err)
-	}
-	_, err = os.Stdout.Write(m.Body)
+
+	_, err := os.Stdout.Write(m.Body)
 	if err != nil {
 		log.Fatalf("ERROR: failed to write to os.Stdout - %s", err)
 	}
@@ -100,7 +105,7 @@ func main() {
 	cfg.UserAgent = fmt.Sprintf("nsq_tail/%s go-nsq/%s", version.Binary, nsq.VERSION)
 	cfg.MaxInFlight = *maxInFlight
 
-	consumers := []nsq.Consumer{}
+	consumers := []*nsq.Consumer{}
 	for i := 0; i < len(topics); i += 1 {
 		fmt.Printf("Adding consumer for topic: %s\n", topics[i])
 
@@ -121,21 +126,15 @@ func main() {
 			log.Fatal(err)
 		}
 
-		consumers = append(consumers, *consumer)
+		consumers = append(consumers, consumer)
 	}
 
+	<-sigChan
+
 	for _, consumer := range consumers {
-		select {
-		case <-consumer.StopChan:
-			for _, consumerToStop := range consumers {
-				consumerToStop.Stop()
-			}
-			return
-		case <-sigChan:
-			for _, consumerToStop := range consumers {
-				consumerToStop.Stop()
-			}
-			return
-		}
+		consumer.Stop()
+	}
+	for _, consumer := range consumers {
+		<-consumer.StopChan
 	}
 }

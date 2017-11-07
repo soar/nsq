@@ -5,12 +5,10 @@ COPY . /go/src/github.com/nsqio/nsq
 
 WORKDIR /go/src/github.com/nsqio/nsq
 
-RUN go get github.com/mattn/goveralls \
- && wget -O /bin/dep https://github.com/golang/dep/releases/download/v0.3.2/dep-linux-amd64 \
+RUN wget -O /bin/dep https://github.com/golang/dep/releases/download/v0.3.2/dep-linux-amd64 \
  && chmod +x /bin/dep \
  && /bin/dep ensure \
  && ./test.sh \
- && ./coverage.sh --coveralls \
  && CGO_ENABLED=0 make DESTDIR=/opt PREFIX=/nsq GOFLAGS='-ldflags="-s -w"' install
 
 FROM alpine:3.6
